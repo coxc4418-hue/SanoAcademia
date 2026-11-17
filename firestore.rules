@@ -1,0 +1,215 @@
+rules_version = '2';
+
+// SanoAcademia — Reglas de seguridad multisede
+// - Cada sede (cuenta) solo accede a sus propios datos en tenants/{uid}.
+// - El administrador general crea, congela, renueva y elimina sedes.
+// - Una sede congelada o con el plan vencido no puede leer ni escribir sus datos.
+// - Las demos (sesión anónima) caducan a los 30 minutos: después solo pueden borrar sus datos.
+// - portals/{código}: portal público de cada alumno (kind 'alumno') o profesor (kind 'profesor'); se lee por código exacto, sin listar.
+// - catalogs/{código}: catálogo público de cursos para la inscripción en línea.
+// - certs/{código}: datos públicos para verificar un certificado por su QR.
+// - inbox/{id}: pagos reportados, solicitudes y justificativos (alumno), listas y notas (profesor) y preinscripciones (catálogo).
+//   Se crean validados desde los portales; solo la academia dueña los ve, los procesa y los borra.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSuperAdmin() {
+      return signedIn()
+        && request.auth.token.email == 'admin@sanoacademia.app'
+        && request.auth.token.firebase.sign_in_provider == 'password';
+    }
+
+    function isAnon() {
+      return signedIn() && request.auth.token.firebase.sign_in_provider == 'anonymous';
+    }
+
+    function isOwner(tenantId) {
+      return signedIn() && request.auth.uid == tenantId;
+    }
+
+    function tenantData(tenantId) {
+      return get(/databases/$(database)/documents/tenants/$(tenantId)).data;
+    }
+
+    // Activa = no congelada, no eliminada y con el plan vigente (si tiene fecha de vencimiento)
+    function tenantActive(tenantId) {
+      let t = tenantData(tenantId);
+      let paid = t.get('paidUntil', null);
+      return t.get('active', true) == true
+        && t.get('deleted', false) != true
+        && (paid == null || paid > request.time);
+    }
+
+    // Una demo solo puede crear/modificar datos mientras no haya vencido
+    function demoValid(tenantId) {
+      let t = tenantData(tenantId);
+      return t.get('demo', false) != true || t.expiresAt > request.time;
+    }
+
+    function ownerCanWrite() {
+      return signedIn() && tenantActive(request.auth.uid) && demoValid(request.auth.uid);
+    }
+
+    // Documentos públicos de la academia (portales, catálogo, certificados): solo su dueña los escribe
+    function publicCreate(code) {
+      return isSuperAdmin()
+        || (signedIn() && code.matches('^[A-Z0-9]{6,12}$')
+            && request.resource.data.tenantId == request.auth.uid && ownerCanWrite());
+    }
+    function publicUpdate() {
+      return isSuperAdmin()
+        || (signedIn() && resource.data.tenantId == request.auth.uid
+            && request.resource.data.tenantId == request.auth.uid && ownerCanWrite());
+    }
+    function publicDelete() {
+      return isSuperAdmin() || (signedIn() && resource.data.tenantId == request.auth.uid);
+    }
+
+    // Usuario → correo (para iniciar sesión con el nombre de usuario)
+    match /usernames/{username} {
+      allow get: if true;
+      allow list: if false;
+      allow write: if isSuperAdmin();
+    }
+
+    // Avisos generales del administrador para todas las sedes
+    match /system/{docId} {
+      allow read: if signedIn();
+      allow write: if isSuperAdmin();
+    }
+
+    // Portal público del alumno o del profesor: se lee por código exacto (nunca se listan)
+    match /portals/{code} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if publicCreate(code);
+      allow update: if publicUpdate();
+      allow delete: if publicDelete();
+    }
+
+    // Catálogo público de cursos (inscripción en línea)
+    match /catalogs/{code} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if publicCreate(code);
+      allow update: if publicUpdate();
+      allow delete: if publicDelete();
+    }
+
+    // Verificación pública de certificados
+    match /certs/{code} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if publicCreate(code);
+      allow update: if publicUpdate();
+      allow delete: if publicDelete();
+    }
+
+    // ---------------- Bandeja ----------------
+    function shortStr(d, k, max) {
+      return d.get(k, '') is string && d.get(k, '').size() <= max;
+    }
+    function optNum(d, k) {
+      return d.get(k, null) == null || (d.get(k, 0) is number && d.get(k, 0) >= 0 && d.get(k, 0) <= 1000000000000);
+    }
+    function validInbox(d) {
+      return d.keys().hasOnly(['tenantId', 'code', 'who', 'type', 'status', 'createdAt',
+          'studentCode', 'studentName', 'teacherName', 'name', 'phone', 'note',
+          'amount', 'amountBs', 'rate', 'method', 'date', 'bank', 'reference',
+          'category', 'text',
+          'groupId', 'marks', 'topic', 'evalId', 'scores',
+          'courseId', 'courseName', 'groupText', 'idDoc', 'birthDate', 'email', 'guardianName', 'guardianPhone'])
+        && d.keys().hasAll(['tenantId', 'code', 'type', 'status', 'createdAt'])
+        && d.tenantId is string && d.tenantId.size() > 0 && d.tenantId.size() <= 128
+        && d.code is string && d.code.size() >= 6 && d.code.size() <= 12
+        && shortStr(d, 'who', 64)
+        && d.status == 'nueva'
+        && d.createdAt is string && d.createdAt.size() <= 30
+        && shortStr(d, 'studentCode', 20) && shortStr(d, 'studentName', 80) && shortStr(d, 'teacherName', 80)
+        && shortStr(d, 'name', 80) && shortStr(d, 'phone', 20) && shortStr(d, 'note', 200)
+        && (
+          (d.type == 'pago' && d.amount is number && d.amount > 0 && d.amount <= 1000000000
+            && optNum(d, 'amountBs') && optNum(d, 'rate')
+            && shortStr(d, 'method', 30) && shortStr(d, 'date', 10) && shortStr(d, 'bank', 40)
+            && d.reference is string && d.reference.size() >= 3 && d.reference.size() <= 30)
+          || (d.type == 'solicitud' && shortStr(d, 'category', 30) && shortStr(d, 'date', 10)
+            && d.text is string && d.text.size() >= 4 && d.text.size() <= 600)
+          || (d.type == 'asistencia' && d.groupId is string && d.groupId.size() <= 64
+            && d.date is string && d.date.size() == 10
+            && d.marks is map && d.marks.size() <= 300 && shortStr(d, 'topic', 200))
+          || (d.type == 'notas' && d.groupId is string && d.groupId.size() <= 64
+            && d.evalId is string && d.evalId.size() <= 40
+            && d.scores is map && d.scores.size() >= 1 && d.scores.size() <= 300)
+          || (d.type == 'inscripcion' && d.courseId is string && d.courseId.size() <= 64
+            && d.groupId is string && d.groupId.size() <= 64
+            && shortStr(d, 'courseName', 80) && shortStr(d, 'groupText', 120)
+            && d.name is string && d.name.size() >= 3
+            && shortStr(d, 'idDoc', 20) && shortStr(d, 'birthDate', 10) && shortStr(d, 'email', 80)
+            && shortStr(d, 'guardianName', 80) && shortStr(d, 'guardianPhone', 20))
+        );
+    }
+    // El portal (o catálogo) debe existir, estar activo y pertenecer a esa academia y a ese alumno/profesor
+    function portalAllows(d) {
+      let path = /databases/$(database)/documents/portals/$(d.code);
+      let p = get(path).data;
+      return exists(path) && p.tenantId == d.tenantId && p.who == d.get('who', '') && p.get('active', true) == true
+        && (
+          (p.kind == 'alumno'
+            && ((d.type == 'pago' && p.allow.reports == true) || (d.type == 'solicitud' && p.allow.requests == true)))
+          || (p.kind == 'profesor' && (d.type == 'asistencia' || d.type == 'notas') && d.groupId in p.get('groupIds', []))
+        );
+    }
+    function catalogAllows(d) {
+      let path = /databases/$(database)/documents/catalogs/$(d.code);
+      let c = get(path).data;
+      return d.type == 'inscripcion' && exists(path) && c.tenantId == d.tenantId && c.get('active', true) == true
+        && d.groupId in c.get('groupIds', []);
+    }
+    match /inbox/{id} {
+      allow create: if (validInbox(request.resource.data)
+            && (request.resource.data.type == 'inscripcion' ? catalogAllows(request.resource.data) : portalAllows(request.resource.data)))
+        || (signedIn() && request.resource.data.tenantId == request.auth.uid && ownerCanWrite());
+      allow get, list: if isSuperAdmin() || (signedIn() && resource.data.tenantId == request.auth.uid);
+      allow update: if isSuperAdmin()
+        || (signedIn() && resource.data.tenantId == request.auth.uid
+            && request.resource.data.tenantId == resource.data.tenantId && ownerCanWrite());
+      allow delete: if isSuperAdmin() || (signedIn() && resource.data.tenantId == request.auth.uid);
+    }
+
+    match /tenants/{tenantId} {
+      allow get: if isSuperAdmin() || isOwner(tenantId);
+      allow list: if isSuperAdmin();
+
+      // Las sedes las crea el administrador. Una sesión anónima solo puede crear su demo (máx. 31 min).
+      allow create: if isSuperAdmin()
+        || (isOwner(tenantId) && isAnon()
+            && request.resource.data.demo == true
+            && request.resource.data.active == true
+            && request.resource.data.ownerUid == request.auth.uid
+            && request.resource.data.expiresAt <= request.time + duration.value(31, 'm'));
+
+      // La sede solo puede cambiar su nombre visible; estado, plan y vencimiento los maneja el administrador.
+      allow update: if isSuperAdmin()
+        || (isOwner(tenantId) && tenantActive(tenantId)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'updatedAt']));
+
+      allow delete: if isSuperAdmin() || (isOwner(tenantId) && resource.data.get('demo', false) == true);
+
+      // Datos de la academia: cursos, grupos, alumnos, profesores, asistencia, notas, mensualidades, pagos...
+      match /{collection}/{docId} {
+        allow read: if isSuperAdmin() || (isOwner(tenantId) && tenantActive(tenantId));
+        allow delete: if isSuperAdmin() || (isOwner(tenantId) && (tenantActive(tenantId) || tenantData(tenantId).get('demo', false) == true));
+        allow create, update: if isSuperAdmin() || (isOwner(tenantId) && tenantActive(tenantId) && demoValid(tenantId));
+      }
+    }
+
+    // Cualquier otra ruta queda bloqueada.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
