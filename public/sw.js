@@ -1,5 +1,5 @@
 // SanoAcademia — Service Worker (PWA, funcionamiento sin conexión)
-const VERSION = 'sanoacademia-v1.0.0';
+const VERSION = 'sanoacademia-v1.0.1';
 const SDK = 'https://www.gstatic.com/firebasejs/10.14.1/';
 const VIEWS = ['admin', 'attendance', 'billing', 'certificates', 'collect', 'courses', 'dashboard', 'enroll', 'enrollments', 'expenses', 'grades', 'notices', 'portal', 'reports', 'requests', 'schedule', 'search', 'settings', 'students', 'teacher-portal', 'teachers', 'verify'];
 const SHELL = [

@@ -10,6 +10,7 @@ import { waStudent, printReceipts } from '../shared.js';
 export function mount(el, { navigate }) {
   let period = currentPeriod();
   let receipts = null;
+  let loading = null; // { per, promise } consulta de recibos en curso
   let q = '';
   el.innerHTML = `
     <div class="view-header"><div><h1 class="view-title">Mensualidades</h1><p class="view-sub">Genera en un clic la mensualidad de cada alumno según sus grupos, con becas, descuento por hermanos y recargo por mora.</p></div>
@@ -61,7 +62,20 @@ export function mount(el, { navigate }) {
   }
 
   async function emitted(cl) {
-    if (!receipts) { $('#b-body').innerHTML = '<div class="card"><div class="spinner" style="margin:30px auto"></div></div>'; receipts = await store.periodReceipts(period).catch(() => []); }
+    if (!receipts) {
+      $('#b-body').innerHTML = '<div class="card"><div class="spinner" style="margin:30px auto"></div></div>';
+      // una sola consulta por mes a la vez; si la red se cuelga se reintenta en vez de dejar la rueda girando
+      const per = period;
+      if (!loading || loading.per !== per) {
+        const once = () => Promise.race([store.periodReceipts(per), new Promise((_, no) => setTimeout(() => no(new Error('lento')), 12000))]);
+        const promise = once().catch(() => once()).catch(() => []);
+        loading = { per, promise };
+        promise.finally(() => { if (loading?.promise === promise) loading = null; });
+      }
+      const r = await loading.promise;
+      if (per !== period || !el.isConnected) return;
+      receipts ||= r;
+    }
     const coll = store.collectedIn(period);
     const pct = cl.totalBilled ? Math.min(100, Math.round(coll / cl.totalBilled * 100)) : 0;
     const t = normalize(q);

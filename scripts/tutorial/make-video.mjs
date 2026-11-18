@@ -55,13 +55,15 @@ const SCENES = [
   { id: '10-portal', track: 'portal', text: 'Este es el portal del alumno, en el teléfono y sin contraseñas: ve su horario y su próxima clase, sus mensualidades, reporta su pago, consulta sus notas y su asistencia, lee los avisos y envía justificativos.' },
   { id: '11-profe', track: 'profe', text: 'Y cada profesor tiene su propio portal: ve sus clases del día, pasa la lista y carga las notas desde su teléfono. Todo llega a la academia al instante. También ve sus horas dictadas y sus pagos.' },
   { id: '12-mensualidades', text: 'En Mensualidades generas en un clic las de todo el mes, según los grupos de cada alumno, con las becas, el descuento por hermanos y el recargo por mora aplicados solos. Revisas la vista previa y luego las envías por WhatsApp.',
-    act: async (v) => { await v.nav('mensualidades'); await sleep(1000); await v.hl('#b-body .kpis', 6500); await v.hl('#b-body .table-wrap', 4000); } },
+    before: async (app) => { await app.evaluate(() => { location.hash = '#/mensualidades'; }); await app.waitForSelector('#b-body .kpis', { timeout: 30000 }).catch(() => {}); await app.evaluate(() => { location.hash = '#/cobranza'; }); await sleep(1500); },
+    act: async (v) => { await v.nav('mensualidades'); await v.page.waitForSelector('#b-body .kpis', { timeout: 15000 }).catch(() => {}); await sleep(600); await v.hl('#b-body .kpis', 6500); await v.hl('#b-body .table-wrap', 4000); } },
   { id: '13-cobranza', text: 'En Cobranza registras los pagos en dólares o en bolívares a la tasa del día. Los pagos que reportan los representantes desde el portal llegan aquí: revisas la referencia y confirmas. Y con “Recordar” le escribes a cada moroso con su saldo.',
     act: async (v) => { await v.nav('cobranza'); await sleep(1000); await v.hl('#c-kpis', 3800); await v.point('#c-tabs button', 'Reportados'); await sleep(1200); await v.hl('#c-body .card', 5000); await v.hl('#c-remind', 2500); } },
   { id: '14-profesores', text: 'El pago de los profesores se calcula solo con las listas de asistencia: por hora, por clase, sueldo fijo o porcentaje. Registras el pago y le entregas su recibo.',
     act: async (v) => { await v.nav('profesores'); await sleep(1000); await v.point('#t-tabs button', 'Pago del mes'); await sleep(1200); await v.hl('#t-body', 6000); } },
   { id: '15-inscripcion', text: 'Comparte tu enlace de inscripción en línea por Instagram o WhatsApp: muestra tus cursos con horarios y cupos libres, y la gente se preinscribe sola. Al terminar un curso, emites certificados con un código QR que cualquiera puede verificar.',
-    act: async (v) => { await v.nav('inscripciones'); await sleep(1000); await v.hl('#i-share', 4500); await v.hl('#i-list', 3500); await v.nav('certificados'); await sleep(1000); await v.hl('#c-list', 4000); } },
+    before: async (app) => { await app.evaluate(() => { location.hash = '#/inscripciones'; }); await app.waitForSelector('#i-share .enroll-qr', { timeout: 30000 }).catch(() => {}); await app.evaluate(() => { location.hash = '#/profesores'; }); await sleep(1500); },
+    act: async (v) => { await v.nav('inscripciones'); await v.page.waitForSelector('#i-share .enroll-qr', { timeout: 15000 }).catch(() => {}); await sleep(600); await v.hl('#i-share', 4500); await v.hl('#i-list', 3500); await v.nav('certificados'); await v.page.waitForFunction(() => document.querySelector('#c-list')?.offsetHeight > 20, { timeout: 15000 }).catch(() => {}); await sleep(500); await v.hl('#c-list', 4000); } },
   { id: '16-reportes', text: 'En Reportes tienes los ingresos y egresos, lo que deja cada curso, la asistencia por grupo, la morosidad y las altas y bajas de alumnos, listo para imprimir o exportar.',
     act: async (v) => {
       await v.nav('reportes'); await sleep(900);
@@ -233,7 +235,21 @@ await app.waitForSelector('#login-form');
 await sleep(1200);
 
 parts = [];
-for (const sc of SCENES.filter((s) => !process.env.UNTIL || s.id <= process.env.UNTIL)) {
+const ONLY = process.env.ONLY ? process.env.ONLY.split(',') : null;
+if (ONLY) {
+  // entra a la demo sin grabar y solo graba las escenas pedidas
+  await app.click('#lg-demo');
+  await app.waitForSelector('.country-grid [data-c="VE"]', { timeout: 90000 });
+  await app.click('.country-grid [data-c="VE"]'); await sleep(400);
+  await app.evaluate(() => [...document.querySelectorAll('.modal [data-ok]')].pop().click());
+  await app.waitForSelector('.sb-nav', { timeout: 120000 });
+  await app.waitForFunction(() => !document.getElementById('boot'), { timeout: 180000 }).catch(() => {});
+  await app.waitForSelector('.tour-tip', { timeout: 30000 }).catch(() => {});
+  await sleep(6000);
+  await app.evaluate(async () => { (await import('/js/tour.js')).stopTour(); document.querySelectorAll('.tour').forEach((x) => x.remove()); document.querySelectorAll('.toast').forEach((t) => t.remove()); });
+}
+for (const sc of SCENES.filter((s) => (!process.env.UNTIL || s.id <= process.env.UNTIL) && (!ONLY || ONLY.some((o) => s.id.startsWith(o))))) {
+  if (sc.before) { try { await sc.before(app); } catch (e) { console.warn('   antes:', e.message); } }
   const voice = tts(sc);
   console.log(`● ${sc.id} (${voice.dur.toFixed(1)} s)`);
   const webm = path.join(WORK, `${sc.id}.webm`);
@@ -297,10 +313,14 @@ try {
   await app.keyboard.press('Escape'); await sleep(300);
   await app.evaluate(() => document.getElementById('demo-end')?.click());
   await app.waitForSelector('.modal [data-yes]', { timeout: 8000 }); await app.click('.modal [data-yes]');
-  await app.waitForSelector('#login-form', { timeout: 60000 });
-  console.log('Demo de la grabación terminada y borrada');
+  let fin = false; for (let i = 0; i < 60 && !fin; i++) { await sleep(1500); try { fin = !!(await app.$('#login-form')); } catch (_) {} }
+  console.log(fin ? 'Demo de la grabación terminada y borrada' : 'La demo no confirmó el cierre (se limpia sola al vencer)');
 } catch (e) { console.warn('No se pudo terminar la demo:', e.message); }
 await browser.close();
+if (ONLY) {
+  const old = JSON.parse(readFileSync(path.join(WORK, 'parts.json'), 'utf8'));
+  parts = old.map((o) => parts.find((n) => n.webm === o.webm) || o);
+}
 writeFileSync(path.join(WORK, 'parts.json'), JSON.stringify(parts, null, 1));
 }
 if (ENCODE_ONLY) parts = JSON.parse(readFileSync(path.join(WORK, 'parts.json'), 'utf8'));
