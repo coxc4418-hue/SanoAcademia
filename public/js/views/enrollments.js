@@ -3,7 +3,7 @@ import { store } from '../store.js';
 import { esc, emptyState, toast, openModal, setBusy, fmtDateTime, fmtDate, waLink, usd, confirmDialog } from '../utils.js';
 import { icon } from '../icons.js';
 import { ENROLL_STATUS, badge, ageOf } from '../academy.js';
-import { ensureCatalogCode, setInbox, convertEnrollment, catalogDoc } from '../ops.js';
+import { ensureCatalogCode, publishCatalogNow, setInbox, convertEnrollment, catalogDoc } from '../ops.js';
 import { ENROLL_URL, qrDataURL } from '../shared.js';
 import { groupOptions, openStudent } from '../student.js';
 import { waStudent } from '../shared.js';
@@ -19,7 +19,8 @@ export function mount(el, { navigate }) {
 
   async function share() {
     const on = store.settings.portal?.enroll !== false && store.settings.portal?.enabled !== false;
-    if (!store.settings.catalogCode) { $('#i-share').innerHTML = `<div class="between"><div><b>${icon('link')} Tu enlace de inscripción</b><div class="t-sub">Créalo una vez y compártelo siempre.</div></div><button class="btn btn-primary" id="i-make">${icon('plus')} Crear enlace</button></div>`; $('#i-make').onclick = async () => { await ensureCatalogCode(); share(); }; return; }
+    if (!store.settings.catalogCode) { $('#i-share').innerHTML = `<div class="between"><div><b>${icon('link')} Tu enlace de inscripción</b><div class="t-sub">Créalo una vez y compártelo siempre.</div></div><button class="btn btn-primary" id="i-make">${icon('plus')} Crear enlace</button></div>`; $('#i-make').onclick = async (e) => { setBusy(e.currentTarget, true, 'Creando…'); await ensureCatalogCode(); share(); }; return; }
+    publishCatalogNow().catch(() => {});
     const url = ENROLL_URL();
     const qr = await qrDataURL(url, 4);
     const cat = catalogDoc();

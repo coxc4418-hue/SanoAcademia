@@ -8,7 +8,7 @@ import { rateChip, startBcv } from './bcv.js';
 import { openCountryPicker, salesWa, SALES_PHONE_FMT } from './shared.js';
 import { isStandalone, platform, bindInstallButtons } from './install.js';
 
-export const VERSION = '1.0.0';
+export const VERSION = '1.0.1';
 
 const ROUTES = {
   inicio: { title: 'Inicio', icon: 'home', group: 'Academia', load: () => import('./views/dashboard.js') },
@@ -253,12 +253,11 @@ async function afterEnter() {
 let pubOff = null;
 function startPublisher() {
   pubOff?.();
-  if (session.isSuper && !store.isDemo) return;
   import('./ops.js').then(({ publishPortals, resetPublished, processTeacherInbox, setPublishScheduler }) => {
     resetPublished();
     const run = debounce(() => publishPortals().catch((e) => console.warn('[portal]', e?.code || e)), 3500);
     setPublishScheduler(run);
-    run();
+    publishPortals().catch((e) => console.warn('[portal]', e?.code || e));
     let busy = false; let again = false;
     const teachNow = async () => {
       if (busy) { again = true; return; }

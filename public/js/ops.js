@@ -101,15 +101,23 @@ export async function saveTeacher(data, id = null) {
   if (!prev) Object.assign(d, { createdAt: nowISO(), portalCode: genCode(8) });
   else if (!prev.portalCode) d.portalCode = genCode(8);
   const b = store.batch(); b.set(ref, d, { merge: true }); await store.commit(b);
+  const saved = { id: ref.id, ...(prev || {}), ...d };
+  if (saved.active !== false && saved.portalCode) await publishTeacherPortal(saved).catch((e) => console.warn('[portal]', e?.code || e));
   resetPublished();
-  return { id: ref.id, ...(prev || {}), ...d };
+  return saved;
 }
 export async function renewTeacherCode(t) {
   const code = genCode(8);
+  const updated = { ...t, portalCode: code };
+  const docData = JSON.parse(JSON.stringify(teacherPortalDoc(updated)));
   const b = store.batch();
   if (t.portalCode) b.delete(store.portalRef(t.portalCode));
   b.set(store.ref('teachers', t.id), { portalCode: code, updatedAt: nowISO() }, { merge: true });
-  await store.commit(b); resetPublished();
+  if (updated.active !== false) b.set(store.portalRef(code), docData);
+  await store.commit(b);
+  published.delete('p:' + t.portalCode);
+  const { updatedAt, ...cmp } = docData;
+  published.set('p:' + code, JSON.stringify(cmp));
   return code;
 }
 export async function setTeacherActive(t, active) {
@@ -173,8 +181,10 @@ export async function saveStudent(data, id = null) {
   if (d.idDoc) { const dup = store.students.find((s) => s.id !== ref.id && s.idDoc && normalize(s.idDoc) === normalize(d.idDoc) && s.status !== 'retirado'); if (dup) throw new Error(`Ya existe un alumno con ese documento: ${dup.name} (${dup.code}).`); }
   b.set(ref, d, { merge: true });
   await store.commit(b);
+  const saved = { id: ref.id, ...(prev || {}), ...d };
+  if (saved.status !== 'retirado' && saved.portalCode) await publishStudentPortal(saved).catch((e) => console.warn('[portal]', e?.code || e));
   resetPublished();
-  return { id: ref.id, ...(prev || {}), ...d };
+  return saved;
 }
 export async function setStudentStatus(s, status) {
   const b = store.batch();
@@ -183,10 +193,16 @@ export async function setStudentStatus(s, status) {
 }
 export async function renewPortalCode(s) {
   const code = genCode(8);
+  const updated = { ...s, portalCode: code };
+  const docData = JSON.parse(JSON.stringify(portalDoc(updated)));
   const b = store.batch();
   if (s.portalCode) b.delete(store.portalRef(s.portalCode));
   b.set(store.ref('students', s.id), { portalCode: code, updatedAt: nowISO() }, { merge: true });
-  await store.commit(b); resetPublished();
+  if (updated.status !== 'retirado') b.set(store.portalRef(code), docData);
+  await store.commit(b);
+  published.delete('p:' + s.portalCode);
+  const { updatedAt, ...cmp } = docData;
+  published.set('p:' + code, JSON.stringify(cmp));
   return code;
 }
 /** Inscribe al alumno en un grupo (revisa el cupo). Con chargeEnroll cobra la inscripción del curso. */
@@ -581,12 +597,56 @@ export function catalogDoc() {
     country: st.country || 'VE', currency: st.currency || '', rate: fxRate(), fxSym: st.fx?.sym || 'Bs', courses, groupIds: courses.flatMap((c) => c.groups.map((g) => g.id)), active: st.portal?.enroll !== false && st.portal?.enabled !== false, updatedAt: nowISO()
   };
 }
-/** Asegura que la academia tenga su código de catálogo para el enlace de inscripción en línea */
-export async function ensureCatalogCode() {
-  if (store.settings.catalogCode) return store.settings.catalogCode;
-  const code = genCode(6);
-  await store.saveSettings({ catalogCode: code });
+/** Publica de inmediato el catálogo de inscripción en línea (/inscripcion/CODIGO) */
+export async function publishCatalogNow() {
+  if (!store.tenantId || !store.settings.catalogCode) return null;
+  const code = store.settings.catalogCode;
+  const data = JSON.parse(JSON.stringify(catalogDoc()));
+  const { updatedAt, ...cmp } = data;
+  const b = store.batch();
+  b.set(store.catalogRef(code), data);
+  await store.commit(b);
+  published.set('c:' + code, JSON.stringify(cmp));
   return code;
+}
+/** Publica de inmediato el portal de un alumno */
+export async function publishStudentPortal(s) {
+  if (!store.tenantId || !s) return null;
+  let stu = s;
+  if (!stu.portalCode) {
+    const code = genCode(8);
+    const b0 = store.batch(); b0.set(store.ref('students', stu.id), { portalCode: code, updatedAt: nowISO() }, { merge: true }); await store.commit(b0);
+    stu = { ...stu, portalCode: code };
+  }
+  const data = JSON.parse(JSON.stringify(portalDoc(stu)));
+  const { updatedAt, ...cmp } = data;
+  const b = store.batch(); b.set(store.portalRef(stu.portalCode), data); await store.commit(b);
+  published.set('p:' + stu.portalCode, JSON.stringify(cmp));
+  return stu.portalCode;
+}
+/** Publica de inmediato el portal de un profesor */
+export async function publishTeacherPortal(t) {
+  if (!store.tenantId || !t) return null;
+  let tc = t;
+  if (!tc.portalCode) {
+    const code = genCode(8);
+    const b0 = store.batch(); b0.set(store.ref('teachers', tc.id), { portalCode: code, updatedAt: nowISO() }, { merge: true }); await store.commit(b0);
+    tc = { ...tc, portalCode: code };
+  }
+  const data = JSON.parse(JSON.stringify(teacherPortalDoc(tc)));
+  const { updatedAt, ...cmp } = data;
+  const b = store.batch(); b.set(store.portalRef(tc.portalCode), data); await store.commit(b);
+  published.set('p:' + tc.portalCode, JSON.stringify(cmp));
+  return tc.portalCode;
+}
+/** Asegura que la academia tenga su código de catálogo y lo publica de inmediato */
+export async function ensureCatalogCode() {
+  if (!store.settings.catalogCode) {
+    const code = genCode(6);
+    await store.saveSettings({ catalogCode: code });
+  }
+  await publishCatalogNow().catch((e) => console.warn('[catalogo]', e?.code || e));
+  return store.settings.catalogCode;
 }
 
 let published = new Map();
@@ -596,7 +656,9 @@ export function setPublishScheduler(fn) { schedulePublish = fn; }
 /** Publica (solo lo que cambió) el portal de cada alumno y profesor, y el catálogo de inscripción */
 export async function publishPortals() {
   if (!store.tenantId || !store.ready) return 0;
-  if (!store.settings.catalogCode && store.courses.length) { await ensureCatalogCode().catch(() => {}); return 0; }
+  if (!store.settings.catalogCode && store.courses.length) {
+    await store.saveSettings({ catalogCode: genCode(6) }).catch(() => {});
+  }
   const ops = [];
   const add = (key, ref, d) => {
     const data = JSON.parse(JSON.stringify(d));

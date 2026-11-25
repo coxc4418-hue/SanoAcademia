@@ -45,16 +45,19 @@ export function teacherForm(t0 = null) {
 }
 
 async function portalModal(t) {
-  if (!t.portalCode) { toast('Guarda el profesor para generar su portal.', 'warning'); return; }
-  const url = TEACHER_URL(t);
+  const { publishTeacherPortal } = await import('../ops.js');
+  const code = await publishTeacherPortal(t).catch(() => t.portalCode);
+  const tc = code && code !== t.portalCode ? { ...t, portalCode: code } : t;
+  if (!tc.portalCode) { toast('Guarda el profesor para generar su portal.', 'warning'); return; }
+  const url = TEACHER_URL(tc);
   const qr = await qrDataURL(url, 5);
-  const text = `Hola ${t.name.split(' ')[0]} 👋, este es tu portal de profesor de *${store.businessName}*:\n${url}\n\nAhí ves tus grupos y horario, pasas la lista y cargas las notas desde el teléfono, y ves tus horas del mes. Guárdalo en tu pantalla de inicio.`;
-  const m = openModal({ title: 'Portal del profesor', size: 'sm', sub: esc(t.name),
-    body: `<div class="center stack"><img src="${qr}" alt="" style="width:200px;height:200px;margin:0 auto;image-rendering:pixelated"><div class="code-box mono">${esc(t.portalCode)}</div><div class="t-sub" style="word-break:break-all">${esc(url)}</div>
-      <div class="row" style="gap:6px;justify-content:center;flex-wrap:wrap"><a class="btn btn-whatsapp" href="${t.phone ? waLink(t.phone, text) : 'https://wa.me/?text=' + encodeURIComponent(text)}" target="_blank" rel="noopener">${icon('whatsapp')} Enviar</a><button class="btn btn-secondary" data-cp>${icon('copy')} Copiar</button><a class="btn btn-ghost" href="${url}" target="_blank" rel="noopener">${icon('external')} Abrir</a></div>
+  const text = `Hola ${tc.name.split(' ')[0]} 👋, este es tu portal de profesor de *${store.businessName}*:\n${url}\n\nAhí ves tus grupos y horario, pasas la lista y cargas las notas desde el teléfono, y ves tus horas del mes. Guárdalo en tu pantalla de inicio.`;
+  const m = openModal({ title: 'Portal del profesor', size: 'sm', sub: esc(tc.name),
+    body: `<div class="center stack"><img src="${qr}" alt="" style="width:200px;height:200px;margin:0 auto;image-rendering:pixelated"><div class="code-box mono">${esc(tc.portalCode)}</div><div class="t-sub" style="word-break:break-all">${esc(url)}</div>
+      <div class="row" style="gap:6px;justify-content:center;flex-wrap:wrap"><a class="btn btn-whatsapp" href="${tc.phone ? waLink(tc.phone, text) : 'https://wa.me/?text=' + encodeURIComponent(text)}" target="_blank" rel="noopener">${icon('whatsapp')} Enviar</a><button class="btn btn-secondary" data-cp>${icon('copy')} Copiar</button><a class="btn btn-ghost" href="${url}" target="_blank" rel="noopener">${icon('external')} Abrir</a></div>
       <button class="btn btn-ghost btn-sm" data-new>${icon('refresh')} Cambiar código (el anterior deja de funcionar)</button></div>` });
   m.el.querySelector('[data-cp]').onclick = () => navigator.clipboard?.writeText(url).then(() => toast('Enlace copiado'));
-  m.el.querySelector('[data-new]').onclick = async () => { if (!(await confirmDialog({ title: 'Cambiar código', message: 'El enlace anterior dejará de funcionar.', confirmText: 'Cambiar' }))) return; await renewTeacherCode(t); m.close(); portalModal(store.teacher(t.id)); };
+  m.el.querySelector('[data-new]').onclick = async () => { if (!(await confirmDialog({ title: 'Cambiar código', message: 'El enlace anterior dejará de funcionar.', confirmText: 'Cambiar' }))) return; await renewTeacherCode(tc); m.close(); portalModal(store.teacher(tc.id) || tc); };
 }
 
 function payModal(t, period) {
